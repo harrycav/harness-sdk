@@ -216,6 +216,13 @@ Evaluators operate at different levels of granularity:
 - **Use Case**: Regression testing, CI/CD pipelines, exact match checks
 - **Includes**: `Equals`, `Contains`, `StartsWith`, `ToolCalled`, `StateEquals`
 
+**[StructuredOutput](structured_output_evaluator.md)**
+
+- **Level**: OUTPUT_LEVEL
+- **Purpose**: Field-level scoring of structured output against ground truth
+- **Use Case**: Extraction tasks where partial correctness matters and you need to know which field failed
+- **Requires**: the `stickler` extra — `pip install "strands-agents-evals[stickler]"`
+
 ## Custom Evaluators
 
 Create domain-specific evaluators by extending the base `Evaluator` class:
