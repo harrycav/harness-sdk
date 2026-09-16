@@ -46,12 +46,12 @@ Prefer [`Equals`](deterministic_evaluators.md) when the output is a scalar and o
 ### `model_cls` (optional)
 - **Type**: `type[BaseModel] | None`
 - **Default**: `None`
-- **Description**: The Pydantic model to score against — the same model the agent emits as `structured_output_model`. When supplied, every case is coerced to it and non-validating input raises, which suits a single-schema suite. When omitted, the class is inferred per case and `metrics()` partitions the rollup by class.
+- **Description**: The Pydantic model to score against — the same model the agent emits as `structured_output_model`. When supplied, every case is coerced to it and non-validating input raises, which suits a single-schema suite. When omitted, the class is inferred per case, which suits a suite that mixes output types — `metrics()` is keyed by model class either way.
 
 ### `match_threshold` (optional)
 - **Type**: `float`
 - **Default**: `0.7`
-- **Description**: Similarity at or above which an object counts as a match. It governs per-element matching of `list[Model]` fields, and forms half of the `test_pass` rule (see [Understanding the Score](#understanding-the-score)).
+- **Description**: Similarity at or above which an object counts as a match. It governs per-element matching of `list[Model]` fields, and the recall half of the `test_pass` rule (see [Scoring System](#scoring-system)).
 
 ### `weight_hints` (optional)
 - **Type**: `bool`
@@ -119,7 +119,7 @@ report.run_display()
 The evaluator returns one `EvaluationOutput` per case with:
 
 - **score**: Weighted mean of the per-field scores, between `0.0` and `1.0`
-- **test_pass**: Boolean — requires both the score *and* recall to clear `match_threshold`
+- **test_pass**: Boolean — requires every field to clear its own threshold *and* `recall` to clear `match_threshold`
 - **reason**: The weakest imperfect fields, e.g. `"weakest fields: line_items=0.75"`, or `"all fields matched"`
 - **label**: The model class name
 
@@ -127,17 +127,19 @@ The evaluator returns one `EvaluationOutput` per case with:
 
 ```python
 evaluator.per_case()   # per-document field scores, plus precision / recall / f1
-evaluator.metrics()    # per-field confusion matrix, keyed by dotted path
+evaluator.metrics()    # per-field confusion matrix, one rollup per model class
 evaluator.explain()    # the comparator chosen per field, and why
 ```
 
-`metrics()` keys each field by its dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the five-category counts (`tp`/`tn`/`fn`/`fa`/`fd`) plus precision, recall, F1, and accuracy.
+`metrics()` returns one rollup per model class, each holding a `field_metrics` mapping keyed by dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the five-category counts (`tp`/`tn`/`fn`/`fa`/`fd`) plus precision, recall, F1, and accuracy.
+
+A nested path's counts only cover documents whose parent pair scored at or above `match_threshold`. Below that, the pair is treated as atomic and no field breakdown is emitted, so a nested field has a smaller denominator than the document count.
 
 :::caution[Do not positionally zip `per_case()` with `report.scores`]
 `per_case()` is ordered by case completion, while `report.scores` is index-ordered, and failed evaluators add zero-score rows. Join on `case` instead.
 :::
 
-## Understanding the Score
+## Scoring System
 
 The score is a **weighted mean of per-field scores**, ranging from `0.0` to `1.0`, where higher is better. Because it is computed rather than judged, the same inputs always produce the same score.
 
@@ -154,7 +156,7 @@ In the second row, `reason` reads `"weakest fields: line_items=0.75"`, and `per_
 
 A field absent on both sides is credited `1.0` — a value the model correctly left blank is a value it got right. On a mostly-empty schema those credits dominate: a ten-field model whose ground truth fills two fields still scores `0.80` against a prediction that returns **nothing**.
 
-Raising `match_threshold` cannot fix this, because the score needed to pass tends toward `1.0` as the optional tail grows. So `test_pass` instead requires that **both** the score and `recall` clear `match_threshold`, and `per_case()` surfaces recall, precision, and f1 for auditability. Recall ignores correct absence, so it does not inflate.
+Raising `match_threshold` cannot fix this, because the score needed to pass tends toward `1.0` as the optional tail grows. So `test_pass` never reads the score: it requires that **every field cleared its own threshold** and that `recall` clears `match_threshold`. A case can therefore score `0.80` and still fail, and `per_case()` surfaces recall, precision, and f1 to show why. Recall ignores correct absence, so it does not inflate.
 
 Two consequences worth internalising:
 
