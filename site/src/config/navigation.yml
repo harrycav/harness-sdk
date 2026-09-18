@@ -240,6 +240,7 @@ sidebar:
               - docs/user-guide/evals-sdk/evaluators/tool_selection_evaluator
               - docs/user-guide/evals-sdk/evaluators/tool_parameter_evaluator
               - docs/user-guide/evals-sdk/evaluators/deterministic_evaluators
+              - docs/user-guide/evals-sdk/evaluators/structured_output_evaluator
               - docs/user-guide/evals-sdk/evaluators/custom_evaluator
           - label: Detectors
             items:
