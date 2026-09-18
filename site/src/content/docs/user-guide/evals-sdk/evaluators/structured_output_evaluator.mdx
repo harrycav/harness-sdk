@@ -129,19 +129,22 @@ The evaluator returns one `EvaluationOutput` per case with:
 evaluator.per_case()   # per-document field scores, plus precision / recall / f1
 evaluator.metrics()    # per-field confusion matrix, one rollup per model class
 evaluator.explain()    # the comparator chosen per field, and why
+evaluator.reset()      # drop accumulated results before reusing the instance
 ```
 
-`metrics()` returns one `ProcessEvaluation` per model class. Read its `field_metrics` attribute — the rollup is a Pydantic model, not a mapping, so `metrics()["Invoice"]["field_metrics"]` raises `TypeError`. `field_metrics` itself is a dict keyed by dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the counts (`tp`/`tn`/`fn`/`fa`/`fd`, plus `fp` = `fa` + `fd`) and the derived metrics under `cm_`-prefixed keys: `cm_precision`, `cm_recall`, `cm_f1`, `cm_accuracy`. Top-level paths also carry a `mean_score`; nested leaves do not.
+The instance accumulates: every case it scores is appended to a list that nothing in the harness clears. Reusing one evaluator across two experiments, or re-running the same experiment in one process, therefore doubles every count in `metrics()` and duplicates rows in `per_case()`. Call `reset()` between runs, or construct a fresh evaluator. The derived `cm_` ratios are unaffected by the duplication, so nothing looks wrong until you read a count.
+
+`metrics()` returns one `ProcessEvaluation` per model class. Read its `field_metrics` attribute — the rollup is a Pydantic model, not a mapping, so `metrics()["Invoice"]["field_metrics"]` raises `TypeError`. `field_metrics` itself is a dict keyed by dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the counts (`tp`/`tn`/`fn`/`fa`/`fd`, plus `fp` = `fa` + `fd`) and the derived metrics under `cm_`-prefixed keys: `cm_precision`, `cm_recall`, `cm_f1`, `cm_accuracy`. Most paths also carry a `mean_score`, but leaves under a `list[Model]` parent do not — `total_amount` has one, `line_items.sku` does not. Leaves under a single nested `BaseModel` do.
 
 ```python
 metrics = evaluator.metrics()
 metrics["Invoice"].field_metrics["total_amount"]["cm_precision"]
 ```
 
-A nested path's counts only cover pairs that scored at or above `match_threshold`. Below that the pair is treated as atomic and no field breakdown is emitted, so its children contribute nothing — a badly wrong document drops out of its children's counts entirely and can leave them reading perfect. Counts are per matched element rather than per document, so a nested path's total may be larger or smaller than the document count. Read a parent path such as `line_items` alongside its children.
+For `list[Model]` fields, a child path's counts only cover element pairs that scored at or above `match_threshold`. Below that the pair is treated as atomic and no field breakdown is emitted, so its children contribute nothing — a badly wrong element drops out of its children's counts entirely and can leave them reading perfect. Counts are also per matched element rather than per document, so `line_items.sku` may total more or fewer than the document count. Read a parent path such as `line_items` alongside its children. Children of a single nested `BaseModel` are not affected: they are emitted whatever the parent scored.
 
 :::caution[Do not positionally zip `per_case()` with `report.scores`]
-`per_case()` is ordered by case completion, while `report.scores` is index-ordered, and failed evaluators add zero-score rows. Join on `case` instead.
+`per_case()` is ordered by case completion, while `report.scores` is index-ordered, and failed evaluators add zero-score rows. Join on `case` instead — and `reset()` first if the instance has already been run, or each case name matches two rows.
 :::
 
 ## Scoring System
@@ -175,7 +178,7 @@ Two genuinely empty objects count as a match, not a failure. The recall gate is 
 ## Best Practices
 
 1. **Pass the model explicitly for single-schema suites**: `StructuredOutput(Invoice)` coerces every case and fails loudly on the wrong shape; omit it only when a suite genuinely mixes output types
-2. **Read `metrics()` to choose what to fix**: the per-field confusion matrix reports how often each path is missed across the dataset — sort it yourself by `cm_recall` or `mean_score`, and read parent paths beside nested ones
+2. **Read `metrics()` to choose what to fix**: the per-field confusion matrix reports how often each path is missed across the dataset — sort it yourself by `cm_recall`, or by `mean_score` if you skip the `list[Model]` children that lack one, and read parent paths beside nested ones
 3. **Audit inferences before trusting them**: call `explain()` to confirm the comparator and threshold chosen for each field
 4. **Report `f1` alongside the score on sparse schemas**: the score alone credits correct absence, and `recall` alone ignores values returned wrong
 5. **Combine with LLM evaluators**: use `StructuredOutput` as a fast deterministic gate, then LLM-based evaluators for qualities that require judgement
