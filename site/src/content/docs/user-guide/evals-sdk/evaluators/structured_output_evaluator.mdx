@@ -24,7 +24,7 @@ Without it, constructing the evaluator raises an `ImportError` naming the comman
 
 - **Field-Level Scoring**: Per-field scores and per-field metrics, not a single pass/fail
 - **Order-Independent List Matching**: A reordered but identical list scores `1.0`, not `0.0`
-- **Zero Configuration**: Comparators, thresholds, and weights are inferred from the Pydantic model
+- **Zero Configuration**: Comparators and thresholds are inferred from the Pydantic model
 - **Deterministic and Offline**: Pure computation — no LLM judge, no credentials, no per-call cost
 - **Inspectable**: `explain()` reports the comparator chosen for each field and why
 - **Dataset Metrics**: Confusion-matrix counts per dotted field path across the whole run
@@ -51,7 +51,7 @@ Prefer [`Equals`](deterministic_evaluators.md) when the output is a scalar and o
 ### `match_threshold` (optional)
 - **Type**: `float`
 - **Default**: `0.7`
-- **Description**: Similarity at or above which an object counts as a match. It governs per-element matching of `list[Model]` fields, and the recall half of the `test_pass` rule (see [Scoring System](#scoring-system)).
+- **Description**: Similarity at or above which an object counts as a match. It sets the bar for per-element matching of `list[Model]` fields, for single nested `BaseModel` fields, and for `dict` fields, and it is what the weighted score is compared against — so it drives both halves of the `test_pass` rule (see [Scoring System](#scoring-system)). Scalar field thresholds are inferred from type and field name and are unaffected.
 
 ### `weight_hints` (optional)
 - **Type**: `bool`
@@ -93,11 +93,11 @@ def extract(case: Case) -> Invoice:
 cases = [
     Case(
         name="invoice-0042",
-        input="INVOICE #INV-2024-0042 — Acme Corporation — 2x WM-100, 5x UC-050 — Total: $1,247.50",
+        input="INVOICE #INV-2024-0042 — Acme Corporation — 2x WM-100, 5x UC-050 — Total: $124.93",
         expected_output=Invoice(
             invoice_id="INV-2024-0042",
             vendor_name="Acme Corporation",
-            total_amount=1247.50,
+            total_amount=124.93,
             line_items=[
                 LineItem(sku="WM-100", quantity=2),
                 LineItem(sku="UC-050", quantity=5),
@@ -119,7 +119,7 @@ report.run_display()
 The evaluator returns one `EvaluationOutput` per case with:
 
 - **score**: Weighted mean of the per-field scores, between `0.0` and `1.0`
-- **test_pass**: Boolean — requires every field to clear its own threshold *and* `recall` to clear `match_threshold`
+- **test_pass**: Boolean — requires the weighted score to clear `match_threshold` and, when anything was counted as findable, `recall` to clear it too. Per-field thresholds shape each field's score but are not themselves gates
 - **reason**: The weakest imperfect fields, e.g. `"weakest fields: line_items=0.75"`, or `"all fields matched"`
 - **label**: The model class name
 
@@ -131,9 +131,14 @@ evaluator.metrics()    # per-field confusion matrix, one rollup per model class
 evaluator.explain()    # the comparator chosen per field, and why
 ```
 
-`metrics()` returns one rollup per model class, each holding a `field_metrics` mapping keyed by dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the five-category counts (`tp`/`tn`/`fn`/`fa`/`fd`) plus precision, recall, F1, and accuracy.
+`metrics()` returns one `ProcessEvaluation` per model class. Read its `field_metrics` attribute — the rollup is a Pydantic model, not a mapping, so `metrics()["Invoice"]["field_metrics"]` raises `TypeError`. `field_metrics` itself is a dict keyed by dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the counts (`tp`/`tn`/`fn`/`fa`/`fd`, plus `fp` = `fa` + `fd`) and the derived metrics under `cm_`-prefixed keys: `cm_precision`, `cm_recall`, `cm_f1`, `cm_accuracy`. Top-level paths also carry a `mean_score`; nested leaves do not.
 
-A nested path's counts only cover documents whose parent pair scored at or above `match_threshold`. Below that, the pair is treated as atomic and no field breakdown is emitted, so a nested field has a smaller denominator than the document count.
+```python
+metrics = evaluator.metrics()
+metrics["Invoice"].field_metrics["total_amount"]["cm_precision"]
+```
+
+A nested path's counts only cover pairs that scored at or above `match_threshold`. Below that the pair is treated as atomic and no field breakdown is emitted, so its children contribute nothing — a badly wrong document drops out of its children's counts entirely and can leave them reading perfect. Counts are per matched element rather than per document, so a nested path's total may be larger or smaller than the document count. Read a parent path such as `line_items` alongside its children.
 
 :::caution[Do not positionally zip `per_case()` with `report.scores`]
 `per_case()` is ordered by case completion, while `report.scores` is index-ordered, and failed evaluators add zero-score rows. Join on `case` instead.
@@ -152,25 +157,27 @@ Ordering is the clearest difference from `Equals`. Given the invoice above:
 
 In the second row, `reason` reads `"weakest fields: line_items=0.75"`, and `per_case()` returns `1.0` for `invoice_id`, `vendor_name`, and `total_amount` against `0.75` for `line_items` — the failing field is named, not inferred.
 
-### Sparse schemas: read recall or f1, not the score alone
+### Sparse schemas: read f1, not the score alone
 
 A field absent on both sides is credited `1.0` — a value the model correctly left blank is a value it got right. On a mostly-empty schema those credits dominate: a ten-field model whose ground truth fills two fields still scores `0.80` against a prediction that returns **nothing**.
 
-Raising `match_threshold` cannot fix this, because the score needed to pass tends toward `1.0` as the optional tail grows. So `test_pass` never reads the score: it requires that **every field cleared its own threshold** and that `recall` clears `match_threshold`. A case can therefore score `0.80` and still fail, and `per_case()` surfaces recall, precision, and f1 to show why. Recall ignores correct absence, so it does not inflate.
+Raising `match_threshold` cannot fix this, because the score needed to pass tends toward `1.0` as the optional tail grows. This is why `test_pass` checks `recall` as well as the score: here the score of `0.80` clears the default `0.7`, but `recall` is `0.0`, so the case fails on recall alone. `per_case()` surfaces recall, precision, and f1 to show why.
+
+Recall is not a complete safety net, though. It is `tp / (tp + fn)`, which counts values that were found but ignores values that were found *wrong* — those land in `fd`, in neither term. On the ten-field example above, a prediction returning one correct and one incorrect value scores `0.90` with **`recall` of `1.0`**, while `precision` is `0.5` and `f1` is `0.667`.
 
 Two consequences worth internalising:
 
-- On sparse schemas, report `recall` or `f1` rather than the score alone.
-- To align the score with your priorities, increase `weight` on the fields you expect to be populated. That is the cleanest correction.
+- On sparse schemas, report `f1` rather than the score or `recall` alone. `recall` can read `1.0` whenever nothing was missed outright, however many values came back wrong.
+- To tell "returned nothing" apart from "returned the wrong thing", read the counts in `metrics()`, not the scalars: both cases give precision, recall, and f1 of `0.0`, but a miss counts as `fn` and a wrong value counts as `fd`.
 
-Two genuinely empty objects — nothing findable on either side — count as a match, not a failure.
+Two genuinely empty objects count as a match, not a failure. The recall gate is skipped whenever nothing was *counted* as findable (`tp + fn == 0`), which is what makes that case pass. Note that a wrong value counts as `fd` rather than `fn`, so a document whose every expected value came back wrong also satisfies that condition and passes on its score alone — check `precision` when a passing case reports `recall` and `f1` of `0.0`.
 
 ## Best Practices
 
 1. **Pass the model explicitly for single-schema suites**: `StructuredOutput(Invoice)` coerces every case and fails loudly on the wrong shape; omit it only when a suite genuinely mixes output types
-2. **Read `metrics()` to choose what to fix**: the per-field confusion matrix ranks fields by how often they are missed across the dataset
+2. **Read `metrics()` to choose what to fix**: the per-field confusion matrix reports how often each path is missed across the dataset — sort it yourself by `cm_recall` or `mean_score`, and read parent paths beside nested ones
 3. **Audit inferences before trusting them**: call `explain()` to confirm the comparator and threshold chosen for each field
-4. **Report recall alongside the score on sparse schemas**: the score alone credits correct absence
+4. **Report `f1` alongside the score on sparse schemas**: the score alone credits correct absence, and `recall` alone ignores values returned wrong
 5. **Combine with LLM evaluators**: use `StructuredOutput` as a fast deterministic gate, then LLM-based evaluators for qualities that require judgement
 
 ## Related Evaluators

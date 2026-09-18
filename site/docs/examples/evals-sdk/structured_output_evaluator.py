@@ -35,7 +35,7 @@ INVOICE  #INV-2024-0042
 Acme Corporation      Date: 2024-03-15
 2x Wireless Mouse (WM-100) @ $29.99
 5x USB-C Cable 1m (UC-050) @ $12.99
-Total: $1,247.50
+Total: $124.93
 """
 
 
@@ -54,7 +54,7 @@ cases = [
         expected_output=Invoice(
             invoice_id="INV-2024-0042",
             vendor_name="Acme Corporation",
-            total_amount=1247.50,
+            total_amount=124.93,
             line_items=[
                 LineItem(sku="WM-100", quantity=2),
                 LineItem(sku="UC-050", quantity=5),
