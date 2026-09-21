@@ -77,7 +77,7 @@ async def main():
     for row in evaluator.per_case():
         print(row["case"], row["overall_score"], row["recall"], row["field_scores"])
 
-    # Per-field confusion matrix, keyed by dotted path (e.g. line_items.sku).
+    # Per-model-class rollup; per-field counts live under .field_metrics.
     print(evaluator.metrics())
 
     # Which comparator was chosen for each field, and why.

@@ -141,7 +141,7 @@ metrics = evaluator.metrics()
 metrics["Invoice"].field_metrics["total_amount"]["cm_precision"]
 ```
 
-For `list[Model]` fields, a child path's counts only cover element pairs that scored at or above `match_threshold`. Below that the pair is treated as atomic and no field breakdown is emitted, so its children contribute nothing — a badly wrong element drops out of its children's counts entirely and can leave them reading perfect. Counts are also per matched element rather than per document, so `line_items.sku` may total more or fewer than the document count. Read a parent path such as `line_items` alongside its children. The other two nesting shapes behave differently again: children of a single nested `BaseModel` are always emitted, whatever the parent scored, while a `dict[str, Model]` field emits no child paths at all, even when its values match exactly — for a dict, the parent path is all you get.
+For `list[Model]` fields, a child path's counts only cover element pairs that scored at or above `match_threshold`. Below that the pair is treated as atomic and no field breakdown is emitted, so its children contribute nothing — a badly wrong element drops out of its children's counts entirely and can leave them reading perfect. Counts are also per matched element rather than per document, so `line_items.sku` may total more or fewer than the document count. Read a parent path such as `line_items` alongside its children. The other two nesting shapes behave differently again. Children of a single nested `BaseModel` are emitted whenever the parent is present on both sides, whatever it scored; if either side is missing the object, only the parent path is counted. That gives object-nested children the same hazard by a second route — across a dataset, documents that dropped the object contribute `fn` to the parent and nothing at all to the children, so a child can read `cm_recall` of `1.0` while the parent reads `0.667`. A `dict[str, Model]` field emits no child paths at all, even when its values match exactly — for a dict, the parent path is all you get.
 
 :::caution[Do not positionally zip `per_case()` with `report.scores`]
 `per_case()` is ordered by case completion, while `report.scores` is index-ordered, and failed evaluators add zero-score rows. Join on `case` instead — and `reset()` first if the instance has already been run, or each case name matches two rows.
@@ -170,10 +170,12 @@ Recall is not a complete safety net, though. It is `tp / (tp + fn)`, which count
 
 Two consequences worth internalising:
 
-- On sparse schemas, report `f1` rather than the score or `recall` alone. `recall` can read `1.0` whenever nothing was missed outright, however many values came back wrong.
-- To tell "returned nothing" apart from "returned the wrong thing", read the counts in `metrics()`, not the scalars: both cases give precision, recall, and f1 of `0.0`, but a miss counts as `fn` and a wrong value counts as `fd`.
+- On sparse schemas, report `f1` rather than the score or `recall` alone. `recall` can read `1.0` whenever at least one value was found and none was missed outright, however many came back wrong. With no `tp` at all it reads `0.0` instead, so a document that got everything wrong and one that got everything right report opposite extremes for the same reason: `fd` is in neither term.
+- To tell these cases apart, read the counts in `metrics()`, not the scalars. Precision, recall, and f1 are all `0.0` for a document that returned nothing, one that returned every value wrong, and one that invented values against blank ground truth — the counts are the only thing that separates them: a miss is `fn`, a wrong value is `fd`, an invention is `fa`.
 
-Two genuinely empty objects count as a match, not a failure. The recall gate is skipped whenever nothing was *counted* as findable (`tp + fn == 0`), which is what makes that case pass. Note that a wrong value counts as `fd` rather than `fn`, so a document whose every expected value came back wrong also satisfies that condition and passes on its score alone — check `precision` when a passing case reports `recall` and `f1` of `0.0`.
+Two genuinely empty objects count as a match, not a failure. The recall gate is skipped whenever nothing was *counted* as findable (`tp + fn == 0`), which is what makes that case pass. Two other documents satisfy that same condition, because neither `fd` nor `fa` is counted as findable: one whose every expected value came back **wrong**, and one that **invented** values against blank ground truth. Both score `0.80` on the ten-field model and both pass `test_pass` on the score alone — the pure invention is the more alarming if you are using `test_pass` as a gate.
+
+None of the scalars will tell you which of the three you have; precision, recall, and f1 are `0.0` for all of them. Read the counts in `metrics()`: `tn` only means genuinely empty, `fd` means wrong values, `fa` means invented ones.
 
 ## Best Practices
 
