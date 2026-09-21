@@ -170,12 +170,22 @@ Recall is not a complete safety net, though. It is `tp / (tp + fn)`, which count
 
 Two consequences worth internalising:
 
-- On sparse schemas, report `f1` rather than the score or `recall` alone. `recall` can read `1.0` whenever at least one value was found and none was missed outright, however many came back wrong. With no `tp` at all it reads `0.0` instead, so a document that got everything wrong and one that got everything right report opposite extremes for the same reason: `fd` is in neither term.
-- To tell these cases apart, read the counts in `metrics()`, not the scalars. Precision, recall, and f1 are all `0.0` for a document that returned nothing, one that returned every value wrong, and one that invented values against blank ground truth — the counts are the only thing that separates them: a miss is `fn`, a wrong value is `fd`, an invention is `fa`.
+- On sparse schemas, report `f1` rather than the score or `recall` alone. `recall` ignores values returned **wrong**, so it can read `1.0` on a document containing them — but a wrong value is also not a right one, so once *every* value is wrong `tp` reaches zero and `recall` collapses to `0.0`. It reads `1.0` at best, `1.0` in the middle, and `0.0` at worst: it does not degrade with quality.
+- No scalar tells the degenerate cases apart from *one another*. Only the counts in `metrics()` do.
 
-Two genuinely empty objects count as a match, not a failure. The recall gate is skipped whenever nothing was *counted* as findable (`tp + fn == 0`), which is what makes that case pass. Two other documents satisfy that same condition, because neither `fd` nor `fa` is counted as findable: one whose every expected value came back **wrong**, and one that **invented** values against blank ground truth. Both score `0.80` on the ten-field model and both pass `test_pass` on the score alone — the pure invention is the more alarming if you are using `test_pass` as a gate.
+Five documents on the ten-field model, all worth telling apart:
 
-None of the scalars will tell you which of the three you have; precision, recall, and f1 are `0.0` for all of them. Read the counts in `metrics()`: `tn` only means genuinely empty, `fd` means wrong values, `fa` means invented ones.
+| prediction | score | `test_pass` | precision / recall / f1 | counts |
+|---|---|---|---|---|
+| every value right | `1.0` | pass | `1.0` / `1.0` / `1.0` | `tp: 2, tn: 8` |
+| nothing returned | `0.80` | **fail** | `0.0` / `0.0` / `0.0` | `tn: 8, fn: 2` |
+| every value wrong | `0.80` | pass | `0.0` / `0.0` / `0.0` | `tn: 8, fd: 2` |
+| values invented, ground truth blank | `0.80` | pass | `0.0` / `0.0` / `0.0` | `tn: 8, fa: 2` |
+| genuinely blank on both sides | `1.0` | pass | `0.0` / `0.0` / `0.0` | `tn: 10` |
+
+Four of the five are identical on all three scalars. The recall gate catches only one of them — the document that returned nothing — because the gate is skipped whenever nothing was *counted* as findable (`tp + fn == 0`), and neither `fd` nor `fa` is counted as findable. So a document whose every value came back wrong, and one that invented values against blank ground truth, both pass `test_pass` on the score alone. The pure invention is the more alarming if you are using `test_pass` as a gate.
+
+What separates them is which bucket is non-zero — not `tn`, which is non-zero in all five. A miss is `fn`, a wrong value is `fd`, an invention is `fa`, and the genuinely blank document is the one carrying *nothing but* `tn`.
 
 ## Best Practices
 
