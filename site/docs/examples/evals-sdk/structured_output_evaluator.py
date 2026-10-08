@@ -12,7 +12,7 @@ import asyncio
 
 from pydantic import BaseModel
 from strands import Agent
-from strands_evals import Case, Experiment
+from strands_evals import Case, Experiment, StructuredOutputReport
 from strands_evals.evaluators import StructuredOutputSimilarity
 
 # --- The model the agent already emits as structured_output_model ---
@@ -67,7 +67,8 @@ cases = [
 # schema, with distinct name= values to keep their rollups apart.
 evaluator = StructuredOutputSimilarity(Invoice)
 
-experiment = Experiment(cases=cases, evaluators=[evaluator])
+# report_cls gives the report its metrics() and per_case() rollups.
+experiment = Experiment(cases=cases, evaluators=[evaluator], report_cls=StructuredOutputReport)
 
 
 async def main():
@@ -75,12 +76,12 @@ async def main():
     report.run_display()
 
     # The field detail rides on each report row, so it survives model_dump_json().
-    for row in StructuredOutputSimilarity.per_case(report):
+    for row in report.per_case():
         print(row["case"], row["overall_score"], row["recall"], row["field_scores"])
 
-    # Dataset rollup. metrics() takes the report and returns one ProcessEvaluation;
-    # the per-field counts are one level down, under .field_metrics.
-    metrics = StructuredOutputSimilarity.metrics(report)
+    # Dataset rollup: one ProcessEvaluation, with the per-field counts one level
+    # down, under .field_metrics.
+    metrics = report.metrics()
     print(metrics.field_metrics["total_amount"]["cm_precision"])
 
     # Which comparator was chosen for each field, and why.

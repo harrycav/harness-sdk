@@ -60,14 +60,14 @@ Prefer [`Equals`](deterministic_evaluators.md) when the output is a scalar and o
 ### `name` (optional)
 - **Type**: `str | None`
 - **Default**: `None`
-- **Description**: Evaluator name, forwarded to the base `Evaluator`. On a mixed-schema run it is also the key you pass as `metrics(report, evaluator="invoice")` to keep each schema's rollup separate.
+- **Description**: Evaluator name, forwarded to the base `Evaluator`. On a mixed-schema run it is also the key you pass as `report.metrics(evaluator="invoice")` to keep each schema's rollup separate.
 
 ## Basic Usage
 
 ```python
 from pydantic import BaseModel
 from strands import Agent
-from strands_evals import Case, Experiment
+from strands_evals import Case, Experiment, StructuredOutputReport
 from strands_evals.evaluators import StructuredOutputSimilarity
 
 
@@ -108,7 +108,8 @@ cases = [
 # The same model the agent already emits as structured_output_model.
 evaluator = StructuredOutputSimilarity(Invoice)
 
-experiment = Experiment(cases=cases, evaluators=[evaluator])
+# report_cls gives the report the rollups shown under Evaluation Output.
+experiment = Experiment(cases=cases, evaluators=[evaluator], report_cls=StructuredOutputReport)
 report = experiment.run_evaluations(extract)
 report.run_display()
 ```
@@ -123,7 +124,7 @@ The evaluator returns one `EvaluationOutput` per case with:
 - **label**: The model class name
 - **metadata**: The field-level detail
 
-The detail rides on `metadata` rather than on the evaluator, so it stays with the report: it survives `report.model_dump_json()`, and the rollups below work on a report reloaded from disk.
+The detail rides on `metadata` rather than on the evaluator, so it stays with the report: it survives `report.model_dump_json()`, and the rollups below work on a saved report reloaded through `StructuredOutputReport`.
 
 ```python
 row = report.detailed_results[0][0]
@@ -139,24 +140,26 @@ row.metadata["comparison"]     # the raw comparison that metrics() aggregates
 Across a whole run, read the rollups:
 
 ```python
-StructuredOutputSimilarity.metrics(report)     # per-field confusion matrix
-StructuredOutputSimilarity.per_case(report)    # per-document field scores, as a flat table
-evaluator.explain()                            # the comparator chosen per field, and why
+report.metrics()       # per-field confusion matrix
+report.per_case()      # per-document field scores, as a flat table
+evaluator.explain()    # the comparator chosen per field, and why
+
+StructuredOutputReport.from_file("report.json").metrics()   # a saved report
 ```
 
-`metrics` and `per_case` are functions of a report, not of the evaluator instance — calling them with no argument raises `TypeError`. Both read only the rows carrying a comparison, so a case whose output never validated stays visible in the report while being excluded from the rollups: a run of two cases where one failed to validate reports a `document_count` of `1`.
+`metrics` and `per_case` are methods of `StructuredOutputReport`, which `run_evaluations` returns only when the experiment passes `report_cls=StructuredOutputReport` — without it you get a plain `EvaluationReport`, which has neither. The CLI and an experiment reloaded with `Experiment.from_file` don't carry `report_cls`, so their reports are the base class; reload the saved report through `StructuredOutputReport.from_file` to roll it up. Both read only the rows carrying a comparison, so a case whose output never validated stays visible in the report while being excluded from the rollups: a run of two cases where one failed to validate reports a `document_count` of `1`.
 
-`metrics(report)` returns a single `ProcessEvaluation`. Read its `field_metrics` attribute — the rollup is a Pydantic model, not a mapping, so `metrics(report)["field_metrics"]` raises `TypeError`. `field_metrics` itself is a dict keyed by dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the counts (`tp`/`tn`/`fn`/`fa`/`fd`, plus `fp` = `fa` + `fd`) and the derived metrics under `cm_`-prefixed keys: `cm_precision`, `cm_recall`, `cm_f1`, `cm_accuracy`. Most paths also carry a `mean_score`, but leaves under a `list[Model]` parent do not — `total_amount` has one, `line_items.sku` does not. Leaves under a single nested `BaseModel` do.
+`report.metrics()` returns a single `ProcessEvaluation`. Read its `field_metrics` attribute — the rollup is a Pydantic model, not a mapping, so `report.metrics()["field_metrics"]` raises `TypeError`. `field_metrics` itself is a dict keyed by dotted path — `line_items.sku`, `line_items.quantity` — so a suite pinpoints the failing field across the dataset rather than merely flagging failure. Each entry carries the counts (`tp`/`tn`/`fn`/`fa`/`fd`, plus `fp` = `fa` + `fd`) and the derived metrics under `cm_`-prefixed keys: `cm_precision`, `cm_recall`, `cm_f1`, `cm_accuracy`. Most paths also carry a `mean_score`, but leaves under a `list[Model]` parent do not — `total_amount` has one, `line_items.sku` does not. Leaves under a single nested `BaseModel` do.
 
 ```python
-metrics = StructuredOutputSimilarity.metrics(report)
+metrics = report.metrics()
 metrics.field_metrics["total_amount"]["cm_precision"]
 ```
 
 For `list[Model]` fields, a child path's counts only cover element pairs that scored at or above `match_threshold`. Below that the pair is treated as atomic and no field breakdown is emitted, so its children contribute nothing — a badly wrong element drops out of its children's counts entirely and can leave them reading perfect. Counts are also per matched element rather than per document, so `line_items.sku` may total more or fewer than the document count. Read a parent path such as `line_items` alongside its children. The other two nesting shapes behave differently again. Children of a single nested `BaseModel` are emitted whenever the parent is present on both sides, whatever it scored; if either side is missing the object, only the parent path is counted. That gives object-nested children the same hazard by a second route — across a dataset, documents that dropped the object contribute `fn` to the parent and nothing at all to the children, so a child can read `cm_recall` of `1.0` while the parent reads `0.667`. A `dict[str, Model]` field emits no child paths at all, even when its values match exactly — for a dict, the parent path is all you get.
 
 :::caution[`per_case()` omits rows, so do not positionally zip it]
-`per_case(report)` is in case order, but it only returns rows carrying field scores — a case whose output failed to validate is absent, while still appearing in `report.scores` as a zero-score row, so the two sequences differ in length. Join on `case` rather than by position.
+`report.per_case()` is in case order, but it only returns rows carrying field scores — a case whose output failed to validate is absent, while still appearing in `report.scores` as a zero-score row, so the two sequences differ in length. Join on `case` rather than by position.
 :::
 
 ## Scoring System
@@ -183,7 +186,7 @@ Recall is not a complete safety net, though. It is `tp / (tp + fn)`, which count
 Two consequences worth internalising:
 
 - On sparse schemas, report `f1` rather than the score or `recall` alone. `recall` ignores values returned **wrong**, so it can read `1.0` on a document containing them — but a wrong value is also not a right one, so once *every* value is wrong `tp` reaches zero and `recall` collapses to `0.0`. It reads `1.0` at best, `1.0` in the middle, and `0.0` at worst: it does not degrade with quality.
-- No scalar tells the degenerate cases apart from *one another*. Only the counts in `metrics(report)` do.
+- No scalar tells the degenerate cases apart from *one another*. Only the counts in `report.metrics()` do.
 
 Six documents on the ten-field model, all worth telling apart:
 
@@ -204,8 +207,8 @@ The last row is the limit that remains, and it is deliberate. With something to 
 
 ## Best Practices
 
-1. **One evaluator per schema**: `model_cls` is required, so a suite mixing output types runs one instance per schema with distinct `name=` values, read apart via `metrics(report, evaluator=...)`
-2. **Read `metrics(report)` to choose what to fix**: the per-field confusion matrix reports how often each path is missed across the dataset — sort it yourself by `cm_recall`, or by `mean_score` if you skip the `list[Model]` children that lack one, and read parent paths beside nested ones
+1. **One evaluator per schema**: `model_cls` is required, so a suite mixing output types runs one instance per schema with distinct `name=` values, read apart via `report.metrics(evaluator=...)`
+2. **Read `report.metrics()` to choose what to fix**: the per-field confusion matrix reports how often each path is missed across the dataset — sort it yourself by `cm_recall`, or by `mean_score` if you skip the `list[Model]` children that lack one, and read parent paths beside nested ones
 3. **Audit inferences before trusting them**: call `explain()` to confirm the comparator and threshold chosen for each field
 4. **Report `f1` alongside the score on sparse schemas**: the score alone credits correct absence, and `recall` alone ignores values returned wrong
 5. **Combine with LLM evaluators**: use `StructuredOutputSimilarity` as a fast deterministic gate, then LLM-based evaluators for qualities that require judgement
