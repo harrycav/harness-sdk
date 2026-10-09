@@ -1,7 +1,10 @@
 """Structured Output Evaluator Example.
 
 Field-by-field scoring of structured output against ground truth.
-Deterministic and offline: no LLM judge, no credentials, no per-call cost.
+Scoring is deterministic and offline: no LLM judge, no credentials, no per-call cost.
+
+The extraction step below calls a live agent, so running this file needs AWS
+credentials with Bedrock access and bills inference.
 
 Requires the optional extra:
 
@@ -63,8 +66,8 @@ cases = [
     ),
 ]
 
-# model_cls is required. A suite mixing output types runs one evaluator per
-# schema, with distinct name= values to keep their rollups apart.
+# model_cls is required. A suite mixing output types runs a separate Experiment
+# per schema: every evaluator in an Experiment scores every case.
 evaluator = StructuredOutputSimilarity(Invoice)
 
 # report_cls gives the report its metrics() and per_case() rollups.

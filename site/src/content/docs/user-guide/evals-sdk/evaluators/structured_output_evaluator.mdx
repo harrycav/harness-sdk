@@ -45,7 +45,7 @@ Prefer [`Equals`](deterministic_evaluators.md) when the output is a scalar and o
 
 ### `model_cls` (required)
 - **Type**: `type[BaseModel] | str`
-- **Description**: The Pydantic model to score against — the same model the agent emits as `structured_output_model`. Every case is coerced to it, and output that will not validate returns a score-`0.0` row naming why rather than raising. Also accepts a dotted path to the class, so a saved experiment reloads. For a suite that mixes output types, run one evaluator per schema with distinct `name=` values.
+- **Description**: The Pydantic model to score against — the same model the agent emits as `structured_output_model`. Every case is coerced to it, and output that will not validate returns a score-`0.0` row naming why rather than raising. Also accepts a dotted path to the class, so a saved experiment reloads. For a suite that mixes output types, run a separate `Experiment` per schema — within one `Experiment` every evaluator scores every case, so cross-schema pairs become score-`0.0` rows.
 
 ### `match_threshold` (optional)
 - **Type**: `float`
@@ -60,7 +60,7 @@ Prefer [`Equals`](deterministic_evaluators.md) when the output is a scalar and o
 ### `name` (optional)
 - **Type**: `str | None`
 - **Default**: `None`
-- **Description**: Evaluator name, forwarded to the base `Evaluator`. On a mixed-schema run it is also the key you pass as `report.metrics(evaluator="invoice")` to keep each schema's rollup separate.
+- **Description**: Evaluator name, forwarded to the base `Evaluator`. On a mixed-schema run it is also the key you pass as `report.metrics(evaluator="invoice")` to read each schema's rollup apart. It keeps rollups legible, not isolated — scoring still runs every evaluator over every case, so use one `Experiment` per schema.
 
 ## Basic Usage
 
@@ -207,7 +207,7 @@ The last row is the limit that remains, and it is deliberate. With something to 
 
 ## Best Practices
 
-1. **One evaluator per schema**: `model_cls` is required, so a suite mixing output types runs one instance per schema with distinct `name=` values, read apart via `report.metrics(evaluator=...)`
+1. **One `Experiment` per schema**: every evaluator in an `Experiment` scores every case, so a single experiment mixing output types produces score-`0.0` cross-pairs that contaminate `overall_score` and `test_passes`. Run a separate `Experiment` per schema and read each report on its own; `name=` keeps rollups legible but does not isolate scoring
 2. **Read `report.metrics()` to choose what to fix**: the per-field confusion matrix reports how often each path is missed across the dataset — sort it yourself by `cm_recall`, or by `mean_score` if you skip the `list[Model]` children that lack one, and read parent paths beside nested ones
 3. **Audit inferences before trusting them**: call `explain()` to confirm the comparator and threshold chosen for each field
 4. **Report `f1` alongside the score on sparse schemas**: the score alone credits correct absence, and `recall` alone ignores values returned wrong
