@@ -4,7 +4,7 @@ Field-by-field scoring of structured output against ground truth.
 Scoring is deterministic and offline: no LLM judge, no credentials, no per-call cost.
 
 The extraction step below calls a live agent, so running this file needs AWS
-credentials with Bedrock access and bills inference.
+credentials with Amazon Bedrock access and bills inference.
 
 Requires the optional extra:
 
@@ -48,7 +48,7 @@ def extract(case: Case) -> Invoice:
     return result.structured_output
 
 
-# --- Ground truth: the labelled expected output for this document ---
+# --- Ground truth: the labeled expected output for this document ---
 
 cases = [
     Case(
